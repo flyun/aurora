@@ -214,11 +214,13 @@ type TurnStile struct {
 	ExpireAt       time.Time
 }
 
+// InitTurnStile 初始化前置参数TurnToken
 func InitTurnStile(client httpclient.AuroraHttpClient, secret *tokens.Secret, proxy string) (*TurnStile, int, error) {
 	poolMutex.Lock()
 	defer poolMutex.Unlock()
 	currTurnToken := TurnStilePool[secret.Token]
 	if currTurnToken == nil || currTurnToken.ExpireAt.Before(time.Now()) {
+		// 发起网络请求
 		response, err := POSTTurnStile(client, secret, proxy, 0)
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
@@ -227,10 +229,12 @@ func InitTurnStile(client httpclient.AuroraHttpClient, secret *tokens.Secret, pr
 		if response.StatusCode != 200 {
 			return nil, response.StatusCode, fmt.Errorf("failed to get chat requirements")
 		}
+		// 请求成功
 		var result chatgpt_types.RequirementsResponse
 		if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 			return nil, response.StatusCode, err
 		}
+		// 装载获取后的TurnToken
 		currTurnToken = &TurnStile{
 			TurnStileToken: result.Token,
 			Arkose:         result.Arkose.Required,
@@ -240,6 +244,8 @@ func InitTurnStile(client httpclient.AuroraHttpClient, secret *tokens.Secret, pr
 	}
 	return currTurnToken, 0, nil
 }
+
+// POSTTurnStile 发起请求获取TurnToken
 func POSTTurnStile(client httpclient.AuroraHttpClient, secret *tokens.Secret, proxy string, retry int) (*http.Response, error) {
 	if proxy != "" {
 		client.SetProxy(proxy)

@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// 接收路由跳转
 func RegisterRouter() *gin.Engine {
 	handler := NewHandle(
 		checkProxy(),

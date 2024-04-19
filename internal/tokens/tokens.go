@@ -5,9 +5,10 @@ import (
 )
 
 type Secret struct {
-	Token  string `json:"token"`
-	PUID   string `json:"puid"`
-	IsFree bool   `json:"isFree"`
+	Token string `json:"token"`
+	PUID  string `json:"puid"`
+	// 是否为登录账号
+	IsFree bool `json:"isFree"`
 }
 type AccessToken struct {
 	tokens []*Secret
