@@ -11,8 +11,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/crypto/sha3"
+	"math/rand"
 	"net/http"
 
 	//http "github.com/bogdanfinn/fhttp"
@@ -55,6 +58,10 @@ var (
 	poolMutex           = sync.Mutex{}
 	TurnStilePool       = map[string]*TurnStile{}
 	userAgent           = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.0.0 Safari/537.36"
+	cores               = []int{8, 12, 16, 24}
+	screens             = []int{3000, 4000, 6000}
+	timeLocation, _     = time.LoadLocation("Asia/Shanghai")
+	timeLayout          = "Mon Jan 2 2006 15:04:05"
 )
 
 func getWSURL(client httpclient.AuroraHttpClient, token string, retry int) (string, error) {
@@ -209,18 +216,54 @@ type ChatRequire struct {
 }
 
 type TurnStile struct {
-	TurnStileToken string
-	Arkose         bool
-	ExpireAt       time.Time
+	TurnStileToken   string
+	ProofOfWorkToken string
+	Arkose           bool
+	ExpireAt         time.Time
 }
 
-// InitTurnStile 初始化前置参数TurnToken
+type ProofWork struct {
+	Difficulty string `json:"difficulty,omitempty"`
+	Required   bool   `json:"required"`
+	Seed       string `json:"seed,omitempty"`
+}
+
+func getParseTime() string {
+	now := time.Now()
+	now = now.In(timeLocation)
+	return now.Format(timeLayout) + " GMT+0800 (中国标准时间)"
+}
+func getConfig() []interface{} {
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+	core := cores[rand.Intn(4)]
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+	screen := screens[rand.Intn(3)]
+	return []interface{}{core + screen, getParseTime(), int64(4294705152), 0, userAgent}
+
+}
+func CalcProofToken(seed string, diff string) string {
+	config := getConfig()
+	diffLen := len(diff) / 2
+	hasher := sha3.New512()
+	for i := 0; i < 100000; i++ {
+		config[3] = i
+		json, _ := json.Marshal(config)
+		base := base64.StdEncoding.EncodeToString(json)
+		hasher.Write([]byte(seed + base))
+		hash := hasher.Sum(nil)
+		hasher.Reset()
+		if hex.EncodeToString(hash[:diffLen]) <= diff {
+			return "gAAAAAB" + base
+		}
+	}
+	return "gAAAAABwQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D" + base64.StdEncoding.EncodeToString([]byte(`"`+seed+`"`))
+}
+
 func InitTurnStile(client httpclient.AuroraHttpClient, secret *tokens.Secret, proxy string) (*TurnStile, int, error) {
 	poolMutex.Lock()
 	defer poolMutex.Unlock()
 	currTurnToken := TurnStilePool[secret.Token]
 	if currTurnToken == nil || currTurnToken.ExpireAt.Before(time.Now()) {
-		// 发起网络请求
 		response, err := POSTTurnStile(client, secret, proxy, 0)
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
@@ -229,23 +272,23 @@ func InitTurnStile(client httpclient.AuroraHttpClient, secret *tokens.Secret, pr
 		if response.StatusCode != 200 {
 			return nil, response.StatusCode, fmt.Errorf("failed to get chat requirements")
 		}
-		// 请求成功
 		var result chatgpt_types.RequirementsResponse
 		if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 			return nil, response.StatusCode, err
 		}
-		// 装载获取后的TurnToken
+
 		currTurnToken = &TurnStile{
 			TurnStileToken: result.Token,
 			Arkose:         result.Arkose.Required,
 			ExpireAt:       time.Now().Add(5 * time.Minute),
 		}
+		if result.Proof.Required == true {
+			currTurnToken.ProofOfWorkToken = CalcProofToken(result.Proof.Seed, result.Proof.Difficulty)
+		}
 		TurnStilePool[secret.Token] = currTurnToken
 	}
 	return currTurnToken, 0, nil
 }
-
-// POSTTurnStile 发起请求获取TurnToken
 func POSTTurnStile(client httpclient.AuroraHttpClient, secret *tokens.Secret, proxy string, retry int) (*http.Response, error) {
 	if proxy != "" {
 		client.SetProxy(proxy)
@@ -347,6 +390,9 @@ func POSTconversation(client httpclient.AuroraHttpClient, message chatgpt_types.
 	}
 	if chat_token.TurnStileToken != "" {
 		header.Set("Openai-Sentinel-Chat-Requirements-Token", chat_token.TurnStileToken)
+	}
+	if chat_token.ProofOfWorkToken != "" {
+		header.Set("Openai-Sentinel-Proof-Token", chat_token.ProofOfWorkToken)
 	}
 	if !secret.IsFree && secret.Token != "" {
 		header.Set("Authorization", "Bearer "+secret.Token)
